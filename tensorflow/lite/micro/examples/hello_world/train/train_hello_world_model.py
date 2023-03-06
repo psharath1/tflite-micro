@@ -58,6 +58,7 @@ import math
 import textwrap
 import traceback
 from typing import NamedTuple, Optional
+from pathlib import Path
 
 ## Shell command utility method
 
@@ -467,8 +468,6 @@ def create_tflite_models(config: ConfigData, ds: Dataset) -> None:
   converter.optimizations = [tf.lite.Optimize.DEFAULT]
   # Enforce integer only quantization
   converter.target_spec.supported_ops = [tf.lite.OpsSet.TFLITE_BUILTINS_INT8]
-  converter.inference_input_type = tf.int8
-  converter.inference_output_type = tf.int8
   # Provide a representative dataset to ensure we quantize correctly.
   converter.representative_dataset = representative_dataset
   model_quant_tflite = converter.convert()
@@ -502,7 +501,9 @@ def predict_tflite(tflite_model: bytes, x_test: np.ndarray) -> np.ndarray:
   x_test_ = x_test_.astype(np.float32)
 
   # Initialize the TFLite interpreter
-  interpreter = tf.lite.Interpreter(model_content=tflite_model)
+  interpreter = tf.lite.Interpreter(model_content=tflite_model,
+                                    experimental_op_resolver_type=\
+                                    tf.lite.experimental.OpResolverType.BUILTIN_REF)
   interpreter.allocate_tensors()
 
   input_details = interpreter.get_input_details()[0]
@@ -606,7 +607,10 @@ def compare_sizes(config: ConfigData) -> None:
   """
 
   # Calculate size
-  size_tf = os.path.getsize(config.MODEL_TF)
+  size_tf = sum(
+      map(lambda p: p.stat().st_size,
+          filter(Path.is_file,
+                 Path(config.MODEL_TF).rglob('*'))))
   size_no_quant_tflite = os.path.getsize(config.MODEL_NO_QUANT_TFLITE)
   size_quant_tflite = os.path.getsize(config.MODEL_QUANT_TFLITE)
 

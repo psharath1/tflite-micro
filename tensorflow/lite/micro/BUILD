@@ -6,8 +6,10 @@ load(
 
 package(
     default_visibility = ["//visibility:public"],
-    # Disabling layering_check because of http://b/177257332
-    features = ["-layering_check"],
+    features = [
+        "-layering_check",  # buildozer: disable=no-layering-check, TODO(b/177257333): consider enabling layering check
+        "-parse_headers",  # buildozer: disable=no-parse-headers, paser_headers is unavailable with bazel (http://b/175817117#comment4)
+    ],
     licenses = ["notice"],
 )
 
@@ -38,15 +40,14 @@ cc_library(
         ":memory_helpers",
         ":micro_allocator",
         ":micro_context",
-        ":micro_error_reporter",
         ":micro_graph",
-        ":micro_profiler",
+        ":micro_profiler_interface",
         ":op_resolvers",
         "//tensorflow/lite:type_to_tflitetype",
         "//tensorflow/lite/c:common",
-        "//tensorflow/lite/core/api",
-        "//tensorflow/lite/core/api:error_reporter",
         "//tensorflow/lite/kernels/internal:tensor",
+        "//tensorflow/lite/micro/tflite_bridge:flatbuffer_conversions_bridge",
+        "//tensorflow/lite/micro/tflite_bridge:op_resolver_bridge",
         "//tensorflow/lite/schema:schema_fbs",
         "//tensorflow/lite/schema:schema_utils",
         "@flatbuffers//:runtime_cc",
@@ -65,9 +66,9 @@ cc_library(
     deps = [
         ":memory_helpers",
         ":micro_allocator",
-        ":micro_error_reporter",
         ":micro_graph",
-        ":micro_profiler",
+        ":micro_log",
+        ":micro_profiler_interface",
         "//tensorflow/lite/c:common",
     ],
 )
@@ -85,8 +86,7 @@ cc_library(
         ":memory_helpers",
         ":micro_allocator",
         ":micro_context",
-        ":micro_error_reporter",
-        ":micro_profiler",
+        ":micro_log",
         ":mock_micro_graph",
         "//tensorflow/lite/c:common",
     ],
@@ -99,7 +99,7 @@ cc_library(
     deps = [
         ":memory_helpers",
         ":micro_allocator",
-        ":micro_error_reporter",
+        ":micro_log",
         ":micro_profiler",
         ":micro_resource_variable",
         "//tensorflow/lite/c:common",
@@ -138,17 +138,16 @@ cc_library(
         ":memory_helpers",
         ":micro_arena_constants",
         ":micro_compatibility",
-        ":micro_error_reporter",
-        "//tensorflow/lite/c:common",
-        "//tensorflow/lite/core/api",
-        "//tensorflow/lite/core/api:error_reporter",
-        "//tensorflow/lite/core/api:op_resolver",
+        ":micro_log",
         "//tensorflow/lite/kernels:kernel_util",
         "//tensorflow/lite/kernels/internal:compatibility",
         "//tensorflow/lite/micro/arena_allocator:ibuffer_allocator",
+        "//tensorflow/lite/micro/arena_allocator:non_persistent_arena_buffer_allocator",
+        "//tensorflow/lite/micro/arena_allocator:persistent_arena_buffer_allocator",
         "//tensorflow/lite/micro/arena_allocator:simple_memory_allocator",
         "//tensorflow/lite/micro/memory_planner:greedy_memory_planner",
         "//tensorflow/lite/micro/memory_planner:micro_memory_planner",
+        "//tensorflow/lite/micro/tflite_bridge:flatbuffer_conversions_bridge",
         "//tensorflow/lite/schema:schema_fbs",
         "//tensorflow/lite/schema:schema_utils",
         "@flatbuffers//:runtime_cc",
@@ -181,8 +180,8 @@ cc_library(
     hdrs = ["memory_helpers.h"],
     deps = [
         "//tensorflow/lite/c:common",
-        "//tensorflow/lite/core/api",
         "//tensorflow/lite/kernels/internal:reference",
+        "//tensorflow/lite/micro/tflite_bridge:flatbuffer_conversions_bridge",
         "//tensorflow/lite/schema:schema_fbs",
         "@flatbuffers//:runtime_cc",
     ],
@@ -205,7 +204,6 @@ cc_library(
         ":op_resolvers",
         "//tensorflow/lite:type_to_tflitetype",
         "//tensorflow/lite/c:common",
-        "//tensorflow/lite/core/api",
         "//tensorflow/lite/kernels:kernel_util",
         "//tensorflow/lite/kernels/internal:compatibility",
         "//tensorflow/lite/kernels/internal:tensor",
@@ -227,11 +225,14 @@ cc_library(
     copts = micro_copts(),
     deps = [
         ":micro_compatibility",
+        ":micro_log",
         "//tensorflow/lite/c:common",
         "//tensorflow/lite/core/api",
         "//tensorflow/lite/kernels:op_macros",
         "//tensorflow/lite/kernels/internal:compatibility",
         "//tensorflow/lite/micro/kernels:micro_ops",
+        "//tensorflow/lite/micro/tflite_bridge:flatbuffer_conversions_bridge",
+        "//tensorflow/lite/micro/tflite_bridge:op_resolver_bridge",
         "//tensorflow/lite/schema:schema_fbs",
     ],
 )
@@ -248,19 +249,17 @@ cc_library(
 )
 
 cc_library(
-    name = "micro_error_reporter",
+    name = "micro_log",
     srcs = [
-        "micro_error_reporter.cc",
+        "micro_log.cc",
     ],
     hdrs = [
-        "micro_error_reporter.h",
+        "micro_log.h",
     ],
     copts = micro_copts(),
     deps = [
         ":debug_log",
-        ":micro_compatibility",
         ":micro_string",
-        "//tensorflow/lite/core/api",
     ],
 )
 
@@ -275,7 +274,7 @@ cc_library(
     copts = micro_copts(),
     deps = [
         ":micro_allocator",
-        ":micro_error_reporter",
+        ":micro_log",
         ":micro_utils",
         "//tensorflow/lite/c:common",
         "//tensorflow/lite/kernels/internal:compatibility",
@@ -306,6 +305,14 @@ cc_library(
 )
 
 cc_library(
+    name = "micro_profiler_interface",
+    hdrs = [
+        "micro_profiler_interface.h",
+    ],
+    copts = micro_copts(),
+)
+
+cc_library(
     name = "micro_profiler",
     srcs = [
         "micro_profiler.cc",
@@ -315,7 +322,9 @@ cc_library(
     ],
     copts = micro_copts(),
     deps = [
-        ":micro_error_reporter",
+        ":micro_compatibility",
+        ":micro_log",
+        ":micro_profiler_interface",
         ":micro_time",
         "//tensorflow/lite/kernels/internal:compatibility",
     ],
@@ -332,7 +341,7 @@ cc_library(
     copts = micro_copts(),
     deps = [
         ":memory_helpers",
-        ":micro_error_reporter",
+        ":micro_log",
         "//tensorflow/lite/c:common",
         "//tensorflow/lite/kernels:op_macros",
     ],
@@ -352,7 +361,7 @@ cc_library(
         ":micro_allocator",
         ":micro_compatibility",
         ":micro_framework",
-        "//tensorflow/lite/core/api",
+        ":micro_log",
         "//tensorflow/lite/kernels/internal:compatibility",
         "//tensorflow/lite/micro/arena_allocator:recording_simple_memory_allocator",
     ],
@@ -370,12 +379,12 @@ cc_library(
 )
 
 cc_test(
-    name = "micro_error_reporter_test",
+    name = "micro_log_test",
     srcs = [
-        "micro_error_reporter_test.cc",
+        "micro_log_test.cc",
     ],
     deps = [
-        ":micro_error_reporter",
+        ":micro_log",
         ":system_setup",
     ],
 )
@@ -400,9 +409,7 @@ cc_test(
     deps = [
         ":micro_allocator",
         ":micro_context",
-        ":micro_error_reporter",
         ":test_helpers",
-        "//tensorflow/lite/core/api",
         "//tensorflow/lite/micro/testing:micro_test",
     ],
 )
@@ -415,9 +422,7 @@ cc_test(
     deps = [
         ":fake_micro_context",
         ":micro_allocator",
-        ":micro_error_reporter",
         ":test_helpers",
-        "//tensorflow/lite/core/api",
         "//tensorflow/lite/micro/testing:micro_test",
     ],
 )
@@ -429,14 +434,12 @@ cc_test(
     ],
     deps = [
         ":micro_compatibility",
-        ":micro_error_reporter",
         ":micro_framework",
-        ":micro_profiler",
+        ":micro_profiler_interface",
         ":micro_utils",
         ":op_resolvers",
         ":recording_allocators",
         ":test_helpers",
-        "//tensorflow/lite/core/api",
         "//tensorflow/lite/micro/testing:micro_test",
     ],
 )
@@ -450,7 +453,6 @@ cc_test(
         ":memory_helpers",
         ":micro_allocator",
         ":micro_arena_constants",
-        ":micro_error_reporter",
         ":test_helpers",
         "//tensorflow/lite/c:common",
         "//tensorflow/lite/micro/memory_planner:memory_plan_struct",
@@ -479,7 +481,6 @@ cc_test(
     ],
     deps = [
         ":micro_allocator",
-        ":micro_error_reporter",
         ":op_resolvers",
         ":recording_allocators",
         ":test_helpers",
@@ -575,7 +576,6 @@ cc_test(
         "memory_arena_threshold_test.cc",
     ],
     deps = [
-        ":micro_error_reporter",
         ":op_resolvers",
         ":recording_allocators",
         "//tensorflow/lite/micro/benchmarks:keyword_scrambled_model_data",

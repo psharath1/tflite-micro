@@ -1,4 +1,4 @@
-/* Copyright 2022 The TensorFlow Authors. All Rights Reserved.
+/* Copyright 2023 The TensorFlow Authors. All Rights Reserved.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -15,8 +15,7 @@ limitations under the License.
 
 #include "tensorflow/lite/micro/kernels/conv.h"
 
-#include "CMSIS/NN/Include/arm_nn_types.h"
-#include "CMSIS/NN/Include/arm_nnfunctions.h"
+#include "Include/arm_nnfunctions.h"
 #include "tensorflow/lite/c/builtin_op_data.h"
 #include "tensorflow/lite/c/common.h"
 #include "tensorflow/lite/kernels/internal/common.h"
@@ -27,6 +26,7 @@ limitations under the License.
 #include "tensorflow/lite/kernels/kernel_util.h"
 #include "tensorflow/lite/kernels/padding.h"
 #include "tensorflow/lite/micro/kernels/kernel_util.h"
+#include "tensorflow/lite/micro/micro_log.h"
 
 namespace tflite {
 namespace {
@@ -88,6 +88,15 @@ TfLiteStatus Prepare(TfLiteContext* context, TfLiteNode* node) {
   output_dims.w = output->dims->data[2];
   output_dims.c = output_shape.Dims(3);
 
+  if (filter->type == kTfLiteInt4) {
+    int filter_size =
+        RuntimeShape(filter->dims->size,
+                     reinterpret_cast<const int32_t*>(filter->dims->data))
+            .FlatSize();
+    context->RequestScratchBufferInArena(
+        context, filter_size, &data->reference_op_data.filter_buffer_index);
+  }
+
   if (input->type == kTfLiteInt8 || input->type == kTfLiteInt16) {
     const int num_channels = filter->dims->data[kConvQuantizedDimension];
     data->reference_op_data.per_channel_output_multiplier =
@@ -121,6 +130,8 @@ TfLiteStatus Prepare(TfLiteContext* context, TfLiteNode* node) {
       buf_size = arm_convolve_wrapper_s8_get_buffer_size(
           &conv_params, &input_dims, &filter_dims, &output_dims);
     } else if (input->type == kTfLiteInt16) {
+      TF_LITE_ENSURE_EQ(context, input->params.zero_point, 0);
+      TF_LITE_ENSURE_EQ(context, output->params.zero_point, 0);
       buf_size = arm_convolve_wrapper_s16_get_buffer_size(
           &conv_params, &input_dims, &filter_dims, &output_dims);
     }
@@ -181,7 +192,7 @@ TfLiteStatus EvalQuantizedPerChannel(TfLiteContext* context, TfLiteNode* node,
   const int batch_size = MatchingDim(input_shape, 0, output_shape, 0);
   const int input_depth = MatchingDim(input_shape, 3, filter_shape, 3);
   const int output_depth = MatchingDim(filter_shape, 0, output_shape, 3);
-  if (tflite::micro::GetTensorData<int8_t>(bias)) {
+  if (tflite::micro::GetOptionalTensorData<int8_t>(bias)) {
     TFLITE_DCHECK_EQ(bias_shape.FlatSize(), output_depth);
   }
 
@@ -233,7 +244,7 @@ TfLiteStatus EvalQuantizedPerChannel(TfLiteContext* context, TfLiteNode* node,
           &ctx, &conv_params, &quant_params, &input_dims,
           tflite::micro::GetTensorData<int8_t>(input), &filter_dims,
           tflite::micro::GetTensorData<int8_t>(filter), &bias_dims,
-          tflite::micro::GetTensorData<int32_t>(bias), &output_dims,
+          tflite::micro::GetOptionalTensorData<int32_t>(bias), &output_dims,
           tflite::micro::GetTensorData<int8_t>(output)),
       ARM_CMSIS_NN_SUCCESS);
 
@@ -279,7 +290,7 @@ TfLiteStatus EvalQuantizedPerChannel16x8(
   const int batch_size = MatchingDim(input_shape, 0, output_shape, 0);
   const int input_depth = MatchingDim(input_shape, 3, filter_shape, 3);
   const int output_depth = MatchingDim(filter_shape, 0, output_shape, 3);
-  if (tflite::micro::GetTensorData<int8_t>(bias)) {
+  if (tflite::micro::GetOptionalTensorData<int8_t>(bias)) {
     TFLITE_DCHECK_EQ(bias_shape.FlatSize(), output_depth);
   }
 
@@ -329,7 +340,7 @@ TfLiteStatus EvalQuantizedPerChannel16x8(
           &ctx, &conv_params, &quant_params, &input_dims,
           tflite::micro::GetTensorData<int16_t>(input), &filter_dims,
           tflite::micro::GetTensorData<int8_t>(filter), &bias_dims,
-          tflite::micro::GetTensorData<int64_t>(bias), &output_dims,
+          tflite::micro::GetOptionalTensorData<int64_t>(bias), &output_dims,
           tflite::micro::GetTensorData<int16_t>(output)),
       ARM_CMSIS_NN_SUCCESS);
 
@@ -353,9 +364,11 @@ TfLiteStatus EvalInt8(TfLiteContext* context, TfLiteNode* node) {
       *(reinterpret_cast<TfLiteConvParams*>(node->builtin_data));
   TFLITE_DCHECK(node->user_data != nullptr);
   const OpData& data = *(static_cast<const OpData*>(node->user_data));
+  TfLiteEvalTensor filter_int8 = tflite::micro::MakeUnpackedInt4Tensor(
+      context, data.reference_op_data.filter_buffer_index, filter);
 
-  return EvalQuantizedPerChannel(context, node, params, data, input, filter,
-                                 bias, output);
+  return EvalQuantizedPerChannel(context, node, params, data, input,
+                                 &filter_int8, bias, output);
 }
 
 TfLiteStatus EvalInt16x8(TfLiteContext* context, TfLiteNode* node) {
@@ -402,8 +415,12 @@ TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
   TF_LITE_ENSURE_MSG(
       context,
       input->type == filter->type ||
-          (input->type == kTfLiteInt16 && filter->type == kTfLiteInt8),
+          (input->type == kTfLiteInt16 && filter->type == kTfLiteInt8) ||
+          (input->type == kTfLiteInt8 && filter->type == kTfLiteInt4),
       "Hybrid models are not supported on TFLite Micro.");
+
+  TfLiteEvalTensor filter_int8 = tflite::micro::MakeUnpackedInt4Tensor(
+      context, data.reference_op_data.filter_buffer_index, filter);
 
   switch (input->type) {  // Already know in/out types are same.
     case kTfLiteFloat32: {
@@ -414,23 +431,34 @@ TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
           tflite::micro::GetTensorShape(filter),
           tflite::micro::GetTensorData<float>(filter),
           tflite::micro::GetTensorShape(bias),
-          tflite::micro::GetTensorData<float>(bias),
+          tflite::micro::GetOptionalTensorData<float>(bias),
           tflite::micro::GetTensorShape(output),
           tflite::micro::GetTensorData<float>(output),
           tflite::micro::GetTensorShape(nullptr), nullptr);
       break;
     }
     case kTfLiteInt8:
-      return EvalQuantizedPerChannel(context, node, params, data, input, filter,
-                                     bias, output);
+      switch (filter_int8.type) {
+        case kTfLiteInt8: {
+          return EvalQuantizedPerChannel(context, node, params, data, input,
+                                         &filter_int8, bias, output);
+        }
+
+        default: {
+          MicroPrintf("Filter type %s (%d) not supported.",
+                      TfLiteTypeGetName(filter->type), filter->type);
+          return kTfLiteError;
+        }
+      }
+
       break;
     case kTfLiteInt16:
       return EvalQuantizedPerChannel16x8(context, node, params, data, input,
                                          filter, bias, output);
       break;
     default:
-      TF_LITE_KERNEL_LOG(context, "Type %s (%d) not supported.",
-                         TfLiteTypeGetName(input->type), input->type);
+      MicroPrintf("Type %s (%d) not supported.", TfLiteTypeGetName(input->type),
+                  input->type);
       return kTfLiteError;
   }
   return kTfLiteOk;
